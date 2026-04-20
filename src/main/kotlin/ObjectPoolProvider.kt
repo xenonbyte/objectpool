@@ -11,15 +11,18 @@ package com.github.xenonbyte
  * @author xubo
  */
 class ObjectPoolProvider private constructor(
-    private val owner: ObjectPoolStoreOwner
+    owner: ObjectPoolStoreOwner
 ) {
+    private val store = owner.store
 
     companion object {
-        private const val DEFAULT_POOL_MAX_SIZE = 5
-        private const val DEFAULT_POOL_KEY_PREFIX = "xenon_byte.pool.DEFAULT_KEY";
+        const val DEFAULT_POOL_MAX_SIZE = 5
+        private const val POOL_KEY_PREFIX = "xenon_byte.pool"
+        private const val IMPLICIT_POOL_LOGICAL_KEY = "(default)"
+        private val GLOBAL_POOL_STORE = ObjectPoolStore()
         private val GLOBAL_POOL_STORE_OWNER = object : ObjectPoolStoreOwner {
             override val store: ObjectPoolStore
-                get() = ObjectPoolStore()
+                get() = GLOBAL_POOL_STORE
 
         }
 
@@ -73,13 +76,61 @@ class ObjectPoolProvider private constructor(
         factory: ObjectFactory<T>,
         maxPoolSize: Int = DEFAULT_POOL_MAX_SIZE
     ): ObjectPool<T> {
-        val key: String = DEFAULT_POOL_KEY_PREFIX + ":" + clazz.getCanonicalName()
-        val pool = owner.store.get(key) ?: run {
-            val newPool = createObjectPool(factory, maxPoolSize)
-            owner.store.put(key, newPool)
-            newPool
+        val poolKey = buildImplicitPoolKey(clazz)
+        return store.getOrPut(
+            storageKey = poolKey,
+            logicalKey = IMPLICIT_POOL_LOGICAL_KEY,
+            typeName = clazz.name,
+            maxPoolSize = maxPoolSize
+        ) {
+            createObjectPool(factory, maxPoolSize)
         }
-        return pool
+    }
+
+    /**
+     * Retrieves a named object pool for a specific object type.
+     * Different [key] values allow multiple pools to coexist for the same class inside one store.
+     *
+     * @param key The logical name of the pool within the current store.
+     * @param clazz The class of the object type [T] that the pool manages.
+     * @param factory The factory used to create objects of type [T].
+     * @return The object pool for the given key and object type.
+     */
+    fun <T : Reusable> get(
+        key: String,
+        clazz: Class<T>,
+        factory: ObjectFactory<T>
+    ): ObjectPool<T> {
+        return get(key, clazz, factory, DEFAULT_POOL_MAX_SIZE)
+    }
+
+    /**
+     * Retrieves a named object pool for a specific object type.
+     * Different [key] values allow multiple pools to coexist for the same class inside one store.
+     *
+     * @param key The logical name of the pool within the current store.
+     * @param clazz The class of the object type [T] that the pool manages.
+     * @param factory The factory used to create objects of type [T].
+     * @param maxPoolSize The maximum size of the pool. Defaults to [ObjectPoolProvider.DEFAULT_POOL_MAX_SIZE].
+     * @return The object pool for the given key and object type.
+     */
+    fun <T : Reusable> get(
+        key: String,
+        clazz: Class<T>,
+        factory: ObjectFactory<T>,
+        maxPoolSize: Int = DEFAULT_POOL_MAX_SIZE
+    ): ObjectPool<T> {
+        require(key.isNotBlank()) { "key must not be blank" }
+
+        val poolKey = buildPoolKey(key, clazz)
+        return store.getOrPut(
+            storageKey = poolKey,
+            logicalKey = key,
+            typeName = clazz.name,
+            maxPoolSize = maxPoolSize
+        ) {
+            createObjectPool(factory, maxPoolSize)
+        }
     }
 
     /**
@@ -90,6 +141,14 @@ class ObjectPoolProvider private constructor(
      * @return The newly created object pool.
      */
     private fun <T : Reusable> createObjectPool(factory: ObjectFactory<T>, maxPoolSize: Int): ObjectPool<T> {
-        return ObjectPool(factory, maxPoolSize);
+        return ObjectPool(factory, maxPoolSize)
+    }
+
+    private fun buildPoolKey(key: String, clazz: Class<*>): String {
+        return "$POOL_KEY_PREFIX:named:$key:${clazz.name}"
+    }
+
+    private fun buildImplicitPoolKey(clazz: Class<*>): String {
+        return "$POOL_KEY_PREFIX:implicit:${clazz.name}"
     }
 }

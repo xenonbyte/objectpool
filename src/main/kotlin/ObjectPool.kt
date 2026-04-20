@@ -1,5 +1,8 @@
 package com.github.xenonbyte
 
+import java.util.ArrayDeque
+import java.util.IdentityHashMap
+
 /**
  * A generic object pool that can manage and reuse instances of objects.
  *
@@ -19,11 +22,20 @@ package com.github.xenonbyte
  */
 class ObjectPool<T : Reusable> internal constructor(
     private val objectFactory: ObjectFactory<T>,
-    private val maxPoolSize: Int
+    internal val maxPoolSize: Int
 ) {
-    private var mPool: ObjectWrapper<T>? = null
-    private var mPoolSize: Int = 0
-    private val mLock = Any()
+    private val pool = ArrayDeque<T>(maxPoolSize.coerceAtLeast(0))
+    private val pooledObjects = IdentityHashMap<T, Unit>()
+    private val lock = Any()
+    private var hitCount = 0L
+    private var missCount = 0L
+    private var recycleCount = 0L
+    private var dropCount = 0L
+    private var peakSize = 0
+
+    init {
+        require(maxPoolSize >= 0) { "maxPoolSize must be >= 0" }
+    }
 
     /**
      * Obtain an object from the pool. If the pool has a reusable object, it will be returned and reused.
@@ -33,17 +45,22 @@ class ObjectPool<T : Reusable> internal constructor(
      * @return A reusable or newly created object of type [T].
      */
     fun obtain(vararg args: Any?): T {
-        synchronized(mLock) {
-            val reuseObject: ObjectWrapper<T>? = mPool?.also {
-                val next = it.mNext
-                mPool = next
-                mPoolSize--
+        val reusable = synchronized(lock) {
+            if (pool.isEmpty()) {
+                missCount++
+                null
+            } else {
+                pool.removeLast().also {
+                    pooledObjects.remove(it)
+                    hitCount++
+                }
             }
-
-            return reuseObject?.value?.also {
-                objectFactory.reuse(it, *args)
-            } ?: objectFactory.create(*args)
         }
+
+        return reusable?.also {
+            // Factory hooks may execute arbitrary user code, so keep them outside the pool lock.
+            objectFactory.reuse(it, *args)
+        } ?: objectFactory.create(*args)
     }
 
     /**
@@ -53,24 +70,39 @@ class ObjectPool<T : Reusable> internal constructor(
      * @param recycleObject The object to be recycled back into the pool.
      */
     fun recycle(recycleObject: T) {
-        synchronized(mLock) {
-            if (mPoolSize < maxPoolSize) {
-                val objectWrapper = ObjectWrapper(recycleObject)
-                objectWrapper.mNext = mPool
-                mPool = objectWrapper
-                mPoolSize++
+        synchronized(lock) {
+            if (pool.size >= maxPoolSize || pooledObjects.containsKey(recycleObject)) {
+                dropCount++
+                return
             }
+
+            pooledObjects[recycleObject] = Unit
+            pool.addLast(recycleObject)
+            recycleCount++
+            peakSize = maxOf(peakSize, pool.size)
         }
     }
 
     fun clear() {
-        synchronized(mLock) {
-            mPoolSize = 0
-            mPool = null
+        synchronized(lock) {
+            pool.clear()
+            pooledObjects.clear()
         }
     }
 
-    private class ObjectWrapper<T : Reusable>(val value: T) {
-        var mNext: ObjectWrapper<T>? = null
+    /**
+     * Returns an immutable snapshot of the pool's runtime counters.
+     */
+    fun stats(): ObjectPoolStats {
+        return synchronized(lock) {
+            ObjectPoolStats(
+                hitCount = hitCount,
+                missCount = missCount,
+                recycleCount = recycleCount,
+                dropCount = dropCount,
+                currentSize = pool.size,
+                peakSize = peakSize
+            )
+        }
     }
 }

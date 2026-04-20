@@ -1,15 +1,92 @@
+import org.gradle.api.file.DuplicatesStrategy
+
 plugins {
     id 'org.jetbrains.kotlin.jvm' version '2.0.0'
+    id 'me.champeau.jmh' version '0.7.3'
+    id 'maven-publish'
 }
 
 group = 'com.github.xenonbyte'
-version = "1.0.0"
+version = "2.0.0"
+
+base {
+    archivesName = 'ObjectPool'
+}
 
 repositories {
     mavenCentral()
     maven { url "https://jitpack.io"  }
 }
 
+java {
+    withSourcesJar()
+    withJavadocJar()
+}
+
+dependencies {
+    testImplementation "org.jetbrains.kotlin:kotlin-test-junit5:2.0.0"
+}
+
 kotlin {
     jvmToolchain(17)
+}
+
+tasks.test {
+    useJUnitPlatform()
+}
+
+tasks.register('benchmarkObjectPool', JavaExec) {
+    group = 'verification'
+    description = 'Runs a local object pool benchmark without external dependencies.'
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.github.xenonbyte.ObjectPoolBenchmarkKt'
+    jvmArgs '-Xms512m', '-Xmx512m'
+}
+
+jmh {
+    warmupIterations = 1
+    iterations = 2
+    fork = 1
+    warmup = '1s'
+    timeOnIteration = '2s'
+    benchmarkMode = ['thrpt']
+    resultFormat = 'JSON'
+    duplicateClassesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+            artifactId = 'ObjectPool'
+
+            pom {
+                name = 'ObjectPool'
+                description = 'A lightweight Kotlin/JVM object reuse pool with diagnostics and benchmark coverage.'
+                url = 'https://github.com/xubo90/ObjectPool'
+
+                licenses {
+                    license {
+                        name = 'The Apache License, Version 2.0'
+                        url = 'https://www.apache.org/licenses/LICENSE-2.0.txt'
+                    }
+                }
+
+                developers {
+                    developer {
+                        id = 'xubo'
+                        name = 'xubo'
+                        email = 'bennyxu1990@hotmail.com'
+                    }
+                }
+
+                scm {
+                    connection = 'scm:git:https://github.com/xubo90/ObjectPool.git'
+                    developerConnection = 'scm:git:ssh://git@github.com/xubo90/ObjectPool.git'
+                    url = 'https://github.com/xubo90/ObjectPool'
+                }
+            }
+        }
+    }
 }
